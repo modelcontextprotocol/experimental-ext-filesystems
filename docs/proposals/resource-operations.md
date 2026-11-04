@@ -9,7 +9,7 @@
 
 Resources can be listed and read, but not created, updated, deleted, or inspected without reading the content ([Problem Statement 4](../problem-statements.md#problem-statement-4-writes-metadata-and-typed-errors)). Servers that need writes expose them as tools with ad hoc names, arguments, and errors, and nothing stops two writers from overwriting each other ([Problem Statement 5](../problem-statements.md#problem-statement-5-optimistic-concurrency-control); [use cases](../use-cases.md): shared state written by several agents, memory servers).
 
-This strawman covers the smallest slice of the charter's scope that fixes the write path: a metadata read (`resources/stat`), `resources/create` with create-if-absent semantics, `resources/update` conditional on a revision, `resources/delete` with an optional revision check, typed errors, and how these interact with existing cache and notification fields. Listing reuses `resources/directory/read` from SEP-2640. Search, glob, bulk reads, and ranges are deferred.
+This strawman covers the smallest slice of the charter's scope that fixes the write path: a metadata read (`resources/stat`), `resources/create` with create-if-absent semantics, `resources/update` and `resources/delete` conditional on a revision, typed errors, and how these interact with existing cache and notification fields. Listing reuses `resources/directory/read` from SEP-2640. Search, glob, bulk reads, and ranges are deferred.
 
 Vocabulary follows Kryspin Ziemski's working document shared in #filesystem-wg ("MCP Resources as Addressable Domain State"), which proposes Create, Read, Update, Delete, Query, and Range (CRUDQR) over Resources and a change-set entry `{uri, effect, previousVersion?, version?}`. This draft covers C, U, D, plus `stat`, and uses the change-set entry in write results. It calls the concurrency token a `revision`, the term [Problem Statement 5](../problem-statements.md#problem-statement-5-optimistic-concurrency-control) uses, so the entry here is `{uri, effect, previousRevision?, revision?}`. Query and Range are deferred.
 
@@ -43,12 +43,12 @@ A `revision` is the opaque revision identifier that [Problem Statement 5](../pro
 - Clients compare revisions only for exact string equality. Revisions have no order.
 - A revision MUST change whenever the content or `mimeType` of the resource changes. A revision MUST NOT be reused for a different state of the same URI, including after a delete and re-create. A digest over the content and `mimeType` is a valid revision.
 - Revisions are scoped to one server and one URI.
-- Returned by `resources/stat`, `resources/create`, and `resources/update`. Core shapes that this extension may not retype carry it in `_meta` under `io.modelcontextprotocol/resource-revision`: entries in a `resources/directory/read` result (`Resource._meta`), and, when the server can provide it, each item of a `resources/read` result (`contents[]._meta`). The `_meta` key name is provisional.
+- Returned by `resources/stat`, `resources/create`, and `resources/update`. Core shapes that this extension may not retype carry it in `_meta` under `io.modelcontextprotocol/resource-revision`: file entries in a `resources/directory/read` result (`Resource._meta`; directory entries carry none in this draft, see PS6.3 under Open questions), and, when the server can provide it, each item of a `resources/read` result (`contents[]._meta`). The `_meta` key name is provisional.
 - A directory resource's revision SHOULD change when its set of direct children changes.
 
 ## Methods
 
-Content in `create` and `update` uses the core `TextResourceContents` or `BlobResourceContents` shape, the same one `resources/read` returns. `contents.uri` MUST equal `uri`. Content travels inline; moving large content is the File Uploads Working Group's job.
+Content in `create` and `update` uses the core `TextResourceContents` or `BlobResourceContents` shape, the same one `resources/read` returns, without `uri`: the method's `uri` names the target. Content travels inline; moving large content is the File Uploads Working Group's job.
 
 ### `resources/stat`
 
@@ -80,13 +80,16 @@ Creates the resource at `uri` only if nothing exists there (create-if-absent). I
   "method": "resources/create",
   "params": {
     "uri": "mem://notes/plan.md",
-    "contents": { "uri": "mem://notes/plan.md", "mimeType": "text/markdown", "text": "# Plan\n" }
+    "contents": { "mimeType": "text/markdown", "text": "# Plan\n" }
   }
 }
 ```
 ```json
 {
-  "resource": { "uri": "mem://notes/plan.md", "name": "plan.md", "mimeType": "text/markdown", "size": 7 },
+  "resource": {
+    "uri": "mem://notes/plan.md", "name": "plan.md", "mimeType": "text/markdown", "size": 7,
+    "annotations": { "lastModified": "2026-10-09T14:02:11Z" }
+  },
   "revision": "17",
   "changes": [{ "uri": "mem://notes/plan.md", "effect": "created", "revision": "17" }]
 }
@@ -103,14 +106,17 @@ Replaces the content of an existing resource, only if its current revision equal
   "method": "resources/update",
   "params": {
     "uri": "mem://notes/plan.md",
-    "contents": { "uri": "mem://notes/plan.md", "mimeType": "text/markdown", "text": "# Plan\n- ship\n" },
+    "contents": { "mimeType": "text/markdown", "text": "# Plan\n- ship\n" },
     "ifMatch": "17"
   }
 }
 ```
 ```json
 {
-  "resource": { "uri": "mem://notes/plan.md", "name": "plan.md", "mimeType": "text/markdown", "size": 14 },
+  "resource": {
+    "uri": "mem://notes/plan.md", "name": "plan.md", "mimeType": "text/markdown", "size": 14,
+    "annotations": { "lastModified": "2026-10-09T14:07:43Z" }
+  },
   "revision": "18",
   "changes": [{ "uri": "mem://notes/plan.md", "effect": "updated", "previousRevision": "17", "revision": "18" }]
 }
@@ -120,7 +126,7 @@ Update is full replacement. Partial updates (patch, append, range writes) are de
 
 ### `resources/delete`
 
-Deletes the resource. With `ifMatch`, only if the current revision matches. Deleting a directory resource is out of scope for this draft (`notSupported`).
+Deletes the resource, only if its current revision equals `ifMatch`. `ifMatch` is required, as on update. Deleting a directory resource is out of scope for this draft (`notSupported`).
 
 ```json
 { "method": "resources/delete", "params": { "uri": "mem://notes/plan.md", "ifMatch": "18" } }
@@ -143,9 +149,9 @@ The lost-update case from [use cases](../use-cases.md) plays out as follows. Two
 
 The Skills extension ([SEP-2640](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2640), Final) already defines `resources/directory/read`: request `{uri, cursor?}`, result `{resources: Resource[], nextCursor?}` listing direct children, with subdirectories as `inode/directory` resources and `-32602` for a missing or non-directory URI. SEP-2640 states that the method is not skill-specific and that a server MAY support it on any directory resource under any scheme.
 
-This draft reuses that method unchanged and adds no listing method of its own. The only addition is a way to advertise it without the Skills extension: SEP-2640 gates the method behind `directoryRead` under `io.modelcontextprotocol/skills`, and declaring that extension commits a server to `skills/list` and `skills/get`, which a plain file server cannot honor. So this extension carries its own `directoryRead` setting with the same meaning. A client may call the method if either extension declares `directoryRead: true`. Entries carry their revision in `_meta` (see Revisions), which also gives SEP-2640 hosts the snapshot token that SEP-2640 notes it lacks.
+This draft reuses that method unchanged and adds no listing method of its own. The only addition is a way to advertise it without the Skills extension: SEP-2640 gates the method behind `directoryRead` under `io.modelcontextprotocol/skills`, and declaring that extension commits a server to `skills/list` and `skills/get`, which a plain file server cannot honor. So this extension carries its own `directoryRead` setting with the same meaning. A client may call the method if either extension declares `directoryRead: true`. File entries carry their revision in `_meta` (see Revisions), which also gives SEP-2640 hosts the snapshot token that SEP-2640 notes it lacks. Directory entries do not in this draft.
 
-The cleaner long-term shape is probably for one definition to live in one place (this extension, or core) with Skills referencing it. That is for the Skills Over MCP WG and this WG to agree on ([open question 6](../open-questions.md)).
+The cleaner long-term shape is probably for one definition to live in one place (this extension, or core) with Skills referencing it. That is for the Skills Over MCP WG and this WG to agree on ([open question 3](../open-questions.md), PS1.2).
 
 ### Deferred
 
@@ -159,7 +165,7 @@ The cleaner long-term shape is probably for one definition to live in one place 
 | Condition | Code | `data.reason` | Other `data` |
 | :--- | :--- | :--- | :--- |
 | Resource does not exist | `-32602` Invalid params | `notFound` | `uri` |
-| URI malformed, `contents.uri` mismatch, or not a directory (`resources/directory/read`) | `-32602` Invalid params | `invalidUri` | `uri` |
+| URI malformed, or not a directory (`resources/directory/read`) | `-32602` Invalid params | `invalidUri` | `uri` |
 | `ifMatch` does not match | `-32010` (provisional) | `revisionMismatch` | `uri`, `currentRevision` |
 | `resources/create` on an existing URI | `-32010` (provisional) | `alreadyExists` | `uri`, `currentRevision` |
 | Operation not supported for this URI (read-only scheme, directory, ancestor is a file) | `-32011` (provisional) | `notSupported` | `uri` |
@@ -175,7 +181,7 @@ The two new codes are placeholders in the implementation-defined band. The 2026-
 
 **`lastModified`.** Servers that track modification time MUST set `annotations.lastModified` on the `Resource` returned by `stat` and by writes, and update it on every write. It is informational only and MUST NOT be used as a precondition: timestamps have coarse resolution and clocks skew, so two writes can share one.
 
-**`ttlMs`.** `resources/stat` results carry `ttlMs` as a freshness hint for metadata, as SEP-2549 defines for other results. A cached revision is only ever a guess: the conditional write is the check, and a stale revision fails safely with `revisionMismatch`. A client SHOULD discard cached reads and stats of a URI after its own successful write to it or an updated notification for it. Write results are not cacheable.
+**`ttlMs`.** `resources/stat` results carry `ttlMs` as a freshness hint for metadata, as SEP-2549 defines for other results. A cached revision is only ever a guess: the conditional write is the check, and a stale revision fails safely with `revisionMismatch`. A client SHOULD discard cached reads and stats of a URI after its own successful write to it or an updated notification for it. Write results carry no `ttlMs` or `cacheScope`; see PS6.4 under Open questions.
 
 **`cacheScope`.** `resources/stat` defaults to `"private"`. A revision reveals that and when a resource changed, so a server whose resources differ per user MUST NOT mark `stat` results `"public"`. Open: whether `"public"` should be allowed at all for `stat`.
 
@@ -191,16 +197,19 @@ The Python prototype is built only on the MCP Python SDK's public `Extension` an
 
 ## Open questions
 
-Numbers refer to [open-questions.md](../open-questions.md); "new" marks questions this draft raises.
+PS*n*.*m* is item *m* under "A proposal must" in Problem Statement *n* of [problem-statements.md](../problem-statements.md); "open question *n*" refers to [open-questions.md](../open-questions.md); "new" marks questions this draft raises.
 
-- **#1** Files as Resource URIs: not addressed (see below). This draft assumes `resources/*` and would be renamed if the group chooses a `files/*` family.
-- **#2** Concurrency: this draft proposes an opaque `revision`, required `ifMatch` on update, optional on delete, and create-if-absent as the only create. Alternatives: optional `ifMatch` on update (unconditional overwrite allowed); HTTP-style `ifNoneMatch: "*"` on a single write method instead of separate create and update.
-- **#3** Interactions: proposed above. Open: change-set entry in notification `_meta`; `cacheScope: "public"` for `stat`; whether `resources/read` SHOULD or MUST carry the revision in `_meta`, and the key name.
-- **#4** Typed errors: proposed above. Open: where extension error codes are allocated; whether `notFound` deserves its own code despite core's `-32602`.
-- **#5** One SEP or several: this draft suggests one SEP for `stat` and writes, with listing settled jointly with Skills, and Query and Range in a later SEP.
-- **#6** Skills directory read: reuse as-is with a second `directoryRead` flag. Open: whether the definition moves here or to core.
-- **New** Server-assigned URIs (SEP-2571 style, create in a collection) alongside client-chosen URIs.
-- **New** Whether a server can declare `stat` without writes (a read-only setting) instead of answering `notSupported` per URI.
+- **Open question 2, PS4.6** Where an upload flow ends and a resource write begins: not addressed (see below). This draft assumes `resources/*` and would be renamed if the group chooses a `files/*` family.
+- **PS5.2, PS5.4** Concurrency: this draft proposes an opaque `revision`, required `ifMatch` on update and delete, and create-if-absent as the only create, so a server that supports writes always enforces preconditions. Alternatives: optional `ifMatch` on update or delete (unconditional overwrite or delete allowed); HTTP-style `ifNoneMatch: "*"` on a single write method instead of separate create and update.
+- **PS5.5** Reads pinned to a revision: not addressed. A client can tell that a resource changed by comparing the revision in `contents[]._meta`, but cannot ask for an older state; most backends keep no history, so the lean is an optional server capability, settled together with partial reads (PS3.4).
+- **PS6.1, PS6.2, PS6.5, PS5.1** Interactions: proposed above. Open: change-set entry in notification `_meta`; `cacheScope: "public"` for `stat`; whether `resources/read` SHOULD or MUST carry the revision in `_meta`, and the key name.
+- **PS6.3** Subscribing to a directory: not addressed. Subscriptions stay per URI, and a client watching a directory relies on `list_changed` or re-reads it. Directory entries in a listing carry no revision for now, because a directory revision is most useful alongside a directory subscription; both are settled together.
+- **PS6.4** `ttlMs` and `cacheScope` on write results: this draft returns the new revision and leaves both out. A write result describes the state right after this write, and another writer can change it at any moment, so the cacheable thing is a fresh `stat` or read, which carry both fields. The new revision is what lets a client seed its cache safely: if it is stale, the next conditional write fails with `revisionMismatch`.
+- **PS4.4** Marking a URI or subtree read-only, writable, or append-only: today a server answers `notSupported` per URI. Open: whether a server declares this up front (on `stat` results, listing entries, or a server-wide read-only setting that serves `stat` without writes). Append-only needs an append operation, deferred with partial updates.
+- **PS4.5** Typed errors: proposed above. Open: permission denied and quota exceeded, not defined yet (the lean is two more `data.reason` values); where extension error codes are allocated; whether `notFound` deserves its own code despite core's `-32602`.
+- **Open question 1** SEP-2571, SEP-2532, and one SEP or several: this draft folds in SEP-2571's create and delete and suggests one SEP for `stat` and writes, with listing settled jointly with Skills, and Query and Range (which overlaps SEP-2532) in a later SEP.
+- **Open question 3, PS1.2** Skills directory read: reuse as-is with a second `directoryRead` flag. Open: whether the definition moves here or to core.
+- **PS4.2** Server-assigned URIs (SEP-2571 style, create in a collection) alongside client-chosen URIs.
 - **New** The extension identifier and `_meta` key names, and whether experimental builds should use a different prefix.
 - **New** Whether `revision` and `changes` both belong in write results.
 
@@ -208,5 +217,5 @@ Numbers refer to [open-questions.md](../open-questions.md); "new" marks question
 
 - **Content transfer.** Content travels inline. Out-of-band transfer, digests, size limits, and streaming belong to the File Uploads Working Group; `create` and `update` will need a way to reference transferred content once that exists.
 - **File inputs.** Marking tool or elicitation inputs as files belongs to the File Uploads Working Group. Nothing here depends on it.
-- **Whether files are Resource URIs.** The charter's cross-cutting decision ([open question 1](../open-questions.md)). This draft operates on Resource URIs because that is what exists today; it takes no position on the decision.
+- **Whether files are Resource URIs.** The charter's cross-cutting decision ([open question 2](../open-questions.md), PS4.6). This draft operates on Resource URIs because that is what exists today; it takes no position on the decision.
 - **Authorization.** Who may write what is out of the charter's scope beyond stating that the existing MCP authorization specification applies.

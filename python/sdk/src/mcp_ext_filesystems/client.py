@@ -3,7 +3,7 @@
     async with Client(server) as client:
         ops = ResourceOperationsClient(client.session)
         stat = await ops.stat("mem://notes/plan.md")
-        await ops.update("mem://notes/plan.md", TextResourceContents(uri=..., text="..."), if_match=stat.revision)
+        await ops.update("mem://notes/plan.md", TextContents(text="..."), if_match=stat.revision)
 
 Wire errors come back as the typed exceptions in `mcp_ext_filesystems.errors`.
 """
@@ -28,13 +28,13 @@ from mcp_ext_filesystems.wire import (
     ReadDirectoryParams,
     ReadDirectoryRequest,
     ReadDirectoryResult,
-    ResourceContents,
     StatParams,
     StatRequest,
     StatResult,
     UpdateParams,
     UpdateRequest,
     UpdateResult,
+    WriteContents,
 )
 
 ResultT = TypeVar("ResultT", bound=Result)
@@ -51,14 +51,14 @@ class ResourceOperationsClient:
     async def stat(self, uri: str) -> StatResult:
         return await self._send(StatRequest(params=StatParams(uri=uri)), StatResult)
 
-    async def create(self, uri: str, contents: ResourceContents) -> CreateResult:
+    async def create(self, uri: str, contents: WriteContents) -> CreateResult:
         return await self._send(CreateRequest(params=CreateParams(uri=uri, contents=contents)), CreateResult)
 
-    async def update(self, uri: str, contents: ResourceContents, *, if_match: str) -> UpdateResult:
+    async def update(self, uri: str, contents: WriteContents, *, if_match: str) -> UpdateResult:
         params = UpdateParams(uri=uri, contents=contents, if_match=if_match)
         return await self._send(UpdateRequest(params=params), UpdateResult)
 
-    async def delete(self, uri: str, *, if_match: str | None = None) -> DeleteResult:
+    async def delete(self, uri: str, *, if_match: str) -> DeleteResult:
         return await self._send(DeleteRequest(params=DeleteParams(uri=uri, if_match=if_match)), DeleteResult)
 
     async def read_directory(self, uri: str) -> list[Resource]:

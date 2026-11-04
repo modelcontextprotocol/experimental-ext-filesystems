@@ -10,6 +10,7 @@ streams. Extension handlers receive no handle on the server's bus; see "SDK exte
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlsplit
@@ -86,14 +87,14 @@ class ResourceOperations(Extension):
         return StatResult(resource=stat.resource, revision=stat.revision)
 
     async def _create(self, ctx: ServerRequestContext[Any, Any], params: CreateParams) -> HandlerResult:
-        _check_uri(params.uri, params.contents.uri)
+        _check_uri(params.uri)
         stat = await self._store.create(params.uri, params.contents)
         await self._publish(ResourcesListChanged())
         change = ResourceChange(uri=params.uri, effect="created", revision=stat.revision)
         return CreateResult(resource=stat.resource, revision=stat.revision, changes=[change])
 
     async def _update(self, ctx: ServerRequestContext[Any, Any], params: UpdateParams) -> HandlerResult:
-        _check_uri(params.uri, params.contents.uri)
+        _check_uri(params.uri)
         previous, stat = await self._store.update(params.uri, params.contents, params.if_match)
         await self._publish(ResourceUpdated(uri=params.uri))
         change = ResourceChange(uri=params.uri, effect="updated", previous_revision=previous, revision=stat.revision)
@@ -108,20 +109,23 @@ class ResourceOperations(Extension):
 
     async def _read_directory(self, ctx: ServerRequestContext[Any, Any], params: ReadDirectoryParams) -> HandlerResult:
         _check_uri(params.uri)
-        return ReadDirectoryResult(resources=await self._store.read_directory(params.uri))
+        resources, next_cursor = await self._store.read_directory(params.uri, params.cursor)
+        return ReadDirectoryResult(resources=resources, next_cursor=next_cursor)
 
     async def _publish(self, event: ResourceUpdated | ResourcesListChanged) -> None:
         if self._bus is not None:
             await self._bus.publish(event)
 
 
-def _check_uri(uri: str, contents_uri: str | None = None) -> None:
+# RFC 3986 absolute URI: scheme ":" hier-part, so `urn:` and other URIs without an authority are accepted.
+_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+def _check_uri(uri: str) -> None:
     parts = urlsplit(uri)
-    if not parts.scheme or "://" not in uri:
+    if not _SCHEME.match(uri):
         raise InvalidResourceUri(uri, "not an absolute URI")
     if parts.fragment or uri.endswith("/"):
         raise InvalidResourceUri(uri, "fragments and trailing slashes are not allowed")
     if any(segment in (".", "..") for segment in parts.path.split("/")):
         raise InvalidResourceUri(uri, "dot segments are not allowed")
-    if contents_uri is not None and contents_uri != uri:
-        raise InvalidResourceUri(uri, f"contents.uri {contents_uri!r} does not match")

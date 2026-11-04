@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import anyio
 import pytest
 from mcp.client.client import Client
@@ -9,7 +11,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.subscriptions import InMemorySubscriptionBus
 from mcp.shared.exceptions import MCPError
 from mcp.shared.subscriptions import ResourceUpdated
-from mcp_types import METHOD_NOT_FOUND, TextResourceContents
+from mcp_types import INVALID_PARAMS, METHOD_NOT_FOUND, Request, RequestParams
 
 from mcp_ext_filesystems import (
     EXTENSION_ID,
@@ -24,21 +26,31 @@ from mcp_ext_filesystems import (
     ResourceOperations,
     ResourceOperationsClient,
     RevisionMismatch,
+    TextContents,
 )
-from mcp_ext_filesystems.wire import DIRECTORY_MIME_TYPE, StatParams, StatRequest, StatResult
+from mcp_ext_filesystems.wire import (
+    DIRECTORY_MIME_TYPE,
+    DeleteResult,
+    ReadDirectoryParams,
+    ReadDirectoryRequest,
+    ReadDirectoryResult,
+    StatParams,
+    StatRequest,
+    StatResult,
+)
 
 pytestmark = pytest.mark.anyio
 
 URI = "mem://notes/plan.md"
 
 
-def text(body: str, uri: str = URI) -> TextResourceContents:
-    return TextResourceContents(uri=uri, text=body, mime_type="text/markdown")
+def text(body: str) -> TextContents:
+    return TextContents(text=body, mime_type="text/markdown")
 
 
-def make_server(*, directory_read: bool = False) -> MCPServer:
+def make_server(*, directory_read: bool = False, store: InMemoryStore | None = None) -> MCPServer:
     bus = InMemorySubscriptionBus()
-    extension = ResourceOperations(InMemoryStore(), subscriptions=bus, directory_read=directory_read)
+    extension = ResourceOperations(store or InMemoryStore(), subscriptions=bus, directory_read=directory_read)
     return MCPServer("notes", subscriptions=bus, extensions=[extension])
 
 
@@ -119,7 +131,7 @@ async def test_delete_with_stale_if_match_keeps_the_resource() -> None:
             await ops.delete(URI, if_match=v1)
         assert caught.value.current_revision == v2
         assert (await ops.stat(URI)).revision == v2
-        await ops.delete(URI)
+        await ops.delete(URI, if_match=v2)
         with pytest.raises(ResourceNotFound):
             await ops.stat(URI)
 
@@ -127,7 +139,7 @@ async def test_delete_with_stale_if_match_keeps_the_resource() -> None:
 async def test_not_found_uses_invalid_params_like_resources_read() -> None:
     async with Client(make_server()) as client:
         ops = ResourceOperationsClient(client.session)
-        for call in (ops.stat(URI), ops.update(URI, text("x"), if_match="1"), ops.delete(URI)):
+        for call in (ops.stat(URI), ops.update(URI, text("x"), if_match="1"), ops.delete(URI, if_match="1")):
             with pytest.raises(ResourceNotFound) as caught:
                 await call
             assert caught.value.code == -32602
@@ -139,11 +151,54 @@ async def test_invalid_uri_and_unsupported_scheme() -> None:
         ops = ResourceOperationsClient(client.session)
         with pytest.raises(InvalidResourceUri):
             await ops.stat("plan.md")
-        with pytest.raises(InvalidResourceUri):
-            await ops.create(URI, text("x", uri="mem://notes/other.md"))
-        with pytest.raises(OperationNotSupported) as caught:
-            await ops.create("file:///etc/hosts", text("x", uri="file:///etc/hosts"))
-    assert caught.value.code == NOT_SUPPORTED
+        for call in (
+            ops.create("file:///etc/hosts", text("x")),
+            ops.update("file:///etc/hosts", text("x"), if_match="1"),
+            ops.delete("file:///etc/hosts", if_match="1"),
+        ):
+            with pytest.raises(OperationNotSupported) as caught:
+                await call
+            assert caught.value.code == NOT_SUPPORTED
+
+
+async def test_absolute_uris_without_an_authority_are_valid() -> None:
+    """RFC 3986 allows `scheme:path`; a foreign scheme is unsupported by this store, not malformed."""
+    async with Client(make_server()) as client:
+        with pytest.raises(OperationNotSupported):
+            await ResourceOperationsClient(client.session).create("urn:example:plan", text("x"))
+
+
+class _UriOnly(RequestParams):
+    uri: str
+
+
+class _UriAndContents(RequestParams):
+    uri: str
+    contents: TextContents
+
+
+class _UpdateWithoutIfMatch(Request[_UriAndContents, Literal["resources/update"]]):
+    method: Literal["resources/update"] = "resources/update"
+    params: _UriAndContents
+
+
+class _DeleteWithoutIfMatch(Request[_UriOnly, Literal["resources/delete"]]):
+    method: Literal["resources/delete"] = "resources/delete"
+    params: _UriOnly
+
+
+async def test_update_and_delete_require_if_match() -> None:
+    async with Client(make_server()) as client:
+        await ResourceOperationsClient(client.session).create(URI, text("one"))
+        requests = (
+            _UpdateWithoutIfMatch(params=_UriAndContents(uri=URI, contents=text("two"))),
+            _DeleteWithoutIfMatch(params=_UriOnly(uri=URI)),
+        )
+        for request in requests:
+            with pytest.raises(MCPError) as caught:
+                await client.session.send_request(request, DeleteResult)
+            assert caught.value.code == INVALID_PARAMS
+        assert (await ResourceOperationsClient(client.session).stat(URI)).resource.size == 3
 
 
 async def test_update_and_delete_notify_resource_subscribers() -> None:
@@ -152,10 +207,10 @@ async def test_update_and_delete_notify_resource_subscribers() -> None:
         ops = ResourceOperationsClient(writer.session)
         revision = (await ops.create(URI, text("one"))).revision
         async with watcher.listen(resource_subscriptions=[URI]) as subscription:
-            await ops.update(URI, text("two"), if_match=revision)
+            revision = (await ops.update(URI, text("two"), if_match=revision)).revision
             with anyio.fail_after(2):
                 assert await subscription.__anext__() == ResourceUpdated(uri=URI)
-            await ops.delete(URI)
+            await ops.delete(URI, if_match=revision)
             with anyio.fail_after(2):
                 assert await subscription.__anext__() == ResourceUpdated(uri=URI)
 
@@ -185,7 +240,7 @@ async def test_directory_read_reuses_the_skills_method_shape() -> None:
     async with Client(make_server(directory_read=True)) as client:
         ops = ResourceOperationsClient(client.session)
         created = await ops.create(URI, text("plan"))
-        await ops.create("mem://notes/archive/old.md", text("old", uri="mem://notes/archive/old.md"))
+        await ops.create("mem://notes/archive/old.md", text("old"))
 
         children = {r.uri: r for r in await ops.read_directory("mem://notes")}
         assert set(children) == {URI, "mem://notes/archive"}
@@ -195,3 +250,22 @@ async def test_directory_read_reuses_the_skills_method_shape() -> None:
 
         with pytest.raises(InvalidResourceUri):
             await ops.read_directory(URI)
+
+
+async def test_directory_read_pages_with_a_cursor() -> None:
+    async with Client(make_server(directory_read=True, store=InMemoryStore(page_size=2))) as client:
+        ops = ResourceOperationsClient(client.session)
+        uris = [f"mem://notes/{name}.md" for name in "abc"]
+        for uri in uris:
+            await ops.create(uri, text(uri))
+
+        request = ReadDirectoryRequest(params=ReadDirectoryParams(uri="mem://notes"))
+        first = await client.session.send_request(request, ReadDirectoryResult)
+        assert [r.uri for r in first.resources] == uris[:2]
+        assert first.next_cursor is not None
+        request = ReadDirectoryRequest(params=ReadDirectoryParams(uri="mem://notes", cursor=first.next_cursor))
+        second = await client.session.send_request(request, ReadDirectoryResult)
+        assert [r.uri for r in second.resources] == uris[2:]
+        assert second.next_cursor is None
+
+        assert [r.uri for r in await ops.read_directory("mem://notes")] == uris

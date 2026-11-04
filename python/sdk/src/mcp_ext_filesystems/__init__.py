@@ -15,6 +15,6 @@ from mcp_ext_filesystems.errors import (
 )
 from mcp_ext_filesystems.server import ResourceOperations
 from mcp_ext_filesystems.store import InMemoryStore, ResourceStore, Stat
-from mcp_ext_filesystems.wire import EXTENSION_ID, REVISION_META_KEY, ResourceChange
+from mcp_ext_filesystems.wire import EXTENSION_ID, REVISION_META_KEY, BlobContents, ResourceChange, TextContents
 
 __version__ = version("mcp-ext-filesystems")

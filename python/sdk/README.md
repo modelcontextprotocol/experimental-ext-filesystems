@@ -28,16 +28,15 @@ Client: wrap a connected session. Errors arrive as typed exceptions.
 
 ```python
 from mcp import Client
-from mcp_types import TextResourceContents
 
-from mcp_ext_filesystems import ResourceOperationsClient, RevisionMismatch
+from mcp_ext_filesystems import ResourceOperationsClient, RevisionMismatch, TextContents
 
 uri = "mem://notes/plan.md"
 async with Client(server) as client:
     ops = ResourceOperationsClient(client.session)
-    created = await ops.create(uri, TextResourceContents(uri=uri, text="# Plan\n"))
+    created = await ops.create(uri, TextContents(text="# Plan\n"))
     try:
-        await ops.update(uri, TextResourceContents(uri=uri, text="# Plan\n- ship\n"), if_match=created.revision)
+        await ops.update(uri, TextContents(text="# Plan\n- ship\n"), if_match=created.revision)
     except RevisionMismatch as conflict:
         ...  # someone else wrote first: re-read, merge, retry with conflict.current_revision
 ```

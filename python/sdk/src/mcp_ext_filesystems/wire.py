@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from mcp_types import (
     BlobResourceContents,
@@ -15,7 +15,7 @@ from mcp_types import (
     Result,
     TextResourceContents,
 )
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 EXTENSION_ID = "io.modelcontextprotocol/resource-operations"
@@ -42,6 +42,25 @@ class _WireModel(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
+class TextContents(_WireModel):
+    """Write payload: core `TextResourceContents` without `uri`. The method's `uri` names the target."""
+
+    mime_type: str | None = None
+    text: str
+    meta: dict[str, Any] | None = Field(alias="_meta", default=None)
+
+
+class BlobContents(_WireModel):
+    """Write payload: core `BlobResourceContents` without `uri`. The method's `uri` names the target."""
+
+    mime_type: str | None = None
+    blob: str
+    meta: dict[str, Any] | None = Field(alias="_meta", default=None)
+
+
+WriteContents = TextContents | BlobContents
+
+
 class ResourceChange(_WireModel):
     """One entry of a change set, in the vocabulary of Kryspin Ziemski's working document."""
 
@@ -62,7 +81,7 @@ class StatResult(CacheableResult):
 
 class CreateParams(RequestParams):
     uri: str
-    contents: ResourceContents
+    contents: WriteContents
 
 
 class CreateResult(Result):
@@ -73,7 +92,7 @@ class CreateResult(Result):
 
 class UpdateParams(RequestParams):
     uri: str
-    contents: ResourceContents
+    contents: WriteContents
     if_match: str
 
 
@@ -85,7 +104,7 @@ class UpdateResult(Result):
 
 class DeleteParams(RequestParams):
     uri: str
-    if_match: str | None = None
+    if_match: str
 
 
 class DeleteResult(Result):
