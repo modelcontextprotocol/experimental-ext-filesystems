@@ -2,7 +2,7 @@
 
 > **Status:** Experimental. This work is for prototyping and feedback only, and is not an accepted or official MCP extension.
 
-This repository holds the working documents and reference implementations for **Resource operations**: a common interface for operating on MCP Resources beyond a single read (`create`, `update`, `delete`, and a metadata read, `stat`), with optimistic concurrency control on writes and a defined interaction with change notification and caching. It is maintained by the Filesystems Working Group, which coordinates with the [File Uploads Working Group](https://modelcontextprotocol.io/community/working-groups/file-uploads) on where an upload flow ends and a resource write begins.
+This repository holds the working documents and reference implementations for **Resource operations**: a common interface for operating on MCP Resources beyond a single read. That covers scoped listing, search and glob, bulk and partial reads, writes (`create`, `update`, `delete`) and a metadata read (`stat`), with optimistic concurrency control on writes and a defined interaction with change notification and caching. The [problem statements](docs/problem-statements.md) define what a proposal must address. It is maintained by the Filesystems Working Group, which coordinates with the [File Uploads Working Group](https://modelcontextprotocol.io/community/working-groups/file-uploads) on where an upload flow ends and a resource write begins.
 
 **Charter:** [Filesystems Working Group charter](https://modelcontextprotocol.io/community/working-groups/filesystems): mission, scope, leadership, and active work items.
 **Discord:** `#filesystem-wg` on the [MCP Discord](https://modelcontextprotocol.io/community/communication#discord).

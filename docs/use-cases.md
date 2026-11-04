@@ -4,7 +4,7 @@ Concrete situations Resource operations should serve. Add yours by pull request:
 
 ## Shared state written by several agents
 
-The charter names multi-agent and job orchestration systems as the motivating consumers of a shared write path. Several agents, or several runs of one agent, read and update the same Resources (plans, notes, task state). Each needs to know whether its write applied cleanly or raced another one.
+The charter names multi-agent and job orchestration systems as the motivating consumers of a shared write path. The [running example](problem-statements.md#running-example) in the problem statements walks through this case.
 
 ## Memory servers
 
@@ -16,4 +16,4 @@ Some servers ask the model to pass file content as base64 inside a tool argument
 
 ## Navigating large Resource trees
 
-A client working in a large repository or document store needs to list one directory, glob for matching paths, or read metadata (`stat`) without reading every Resource, then read only what it needs.
+A client working in a large repository or document store needs to list one directory, glob for matching paths, or read metadata (`stat`) without reading every Resource, then read only what it needs. See Problem Statements [1](problem-statements.md#problem-statement-1-scoped-listing-and-directory-traversal), [2](problem-statements.md#problem-statement-2-server-side-search-and-glob-matching) and [3](problem-statements.md#problem-statement-3-bulk-and-partial-reads).
