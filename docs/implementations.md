@@ -10,7 +10,7 @@ To add or update a row, open a pull request. Keep notes to one line.
 
 | Implementation | Language | Status | Notes |
 | :--- | :--- | :--- | :--- |
-| [`python/sdk/`](../python/sdk/) | Python | `planned` | Reference implementation in this repository |
+| [`python/sdk/`](../python/sdk/) | Python | `prototype` | Reference implementation of the [strawman](proposals/resource-operations.md) in this repository |
 
 ## Servers
 
