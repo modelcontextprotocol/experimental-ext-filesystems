@@ -3,14 +3,14 @@
     async with Client(server) as client:
         ops = ResourceOperationsClient(client.session)
         stat = await ops.stat("mem://notes/plan.md")
-        await ops.update("mem://notes/plan.md", TextContents(text="..."), if_match=stat.revision)
+        await ops.write("mem://notes/plan.md", TextContents(text="..."), if_match=stat.revision)
 
 Wire errors come back as the typed exceptions in `mcp_ext_filesystems.errors`.
 """
 
 from __future__ import annotations
 
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from mcp.client.session import ClientSession
 from mcp.shared.exceptions import MCPError
@@ -19,9 +19,6 @@ from mcp_types import Request, Resource, Result
 from mcp_ext_filesystems.errors import from_mcp_error
 from mcp_ext_filesystems.wire import (
     EXTENSION_ID,
-    CreateParams,
-    CreateRequest,
-    CreateResult,
     DeleteParams,
     DeleteRequest,
     DeleteResult,
@@ -31,10 +28,10 @@ from mcp_ext_filesystems.wire import (
     StatParams,
     StatRequest,
     StatResult,
-    UpdateParams,
-    UpdateRequest,
-    UpdateResult,
     WriteContents,
+    WriteParams,
+    WriteRequest,
+    WriteResult,
 )
 
 ResultT = TypeVar("ResultT", bound=Result)
@@ -51,12 +48,17 @@ class ResourceOperationsClient:
     async def stat(self, uri: str) -> StatResult:
         return await self._send(StatRequest(params=StatParams(uri=uri)), StatResult)
 
-    async def create(self, uri: str, contents: WriteContents) -> CreateResult:
-        return await self._send(CreateRequest(params=CreateParams(uri=uri, contents=contents)), CreateResult)
-
-    async def update(self, uri: str, contents: WriteContents, *, if_match: str) -> UpdateResult:
-        params = UpdateParams(uri=uri, contents=contents, if_match=if_match)
-        return await self._send(UpdateRequest(params=params), UpdateResult)
+    async def write(
+        self,
+        uri: str,
+        contents: WriteContents,
+        *,
+        if_match: str | None = None,
+        if_none_match: Literal["*"] | None = None,
+    ) -> WriteResult:
+        """Pass exactly one of `if_match` (update that revision) or `if_none_match="*"` (create if absent)."""
+        params = WriteParams(uri=uri, contents=contents, if_match=if_match, if_none_match=if_none_match)
+        return await self._send(WriteRequest(params=params), WriteResult)
 
     async def delete(self, uri: str, *, if_match: str) -> DeleteResult:
         return await self._send(DeleteRequest(params=DeleteParams(uri=uri, if_match=if_match)), DeleteResult)

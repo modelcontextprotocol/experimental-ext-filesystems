@@ -47,12 +47,13 @@ class ResourceStore(Protocol):
         """Raise `ResourceNotFound` if `uri` does not exist."""
         ...
 
-    async def create(self, uri: str, contents: WriteContents) -> Stat:
-        """Create `uri` only if it does not exist; raise `AlreadyExists` with the current revision otherwise."""
-        ...
+    async def write(self, uri: str, contents: WriteContents, if_match: str | None) -> tuple[str | None, Stat]:
+        """Write `uri` and return the previous revision (`None` on create) and the new stat.
 
-    async def update(self, uri: str, contents: WriteContents, if_match: str) -> tuple[str, Stat]:
-        """Replace `uri` only if its revision equals `if_match`. Return the previous revision and the new stat."""
+        With `if_match`, replace `uri` only if its revision equals it. With `if_match=None` (the wire's
+        `ifNoneMatch: "*"`), create `uri` only if it does not exist; raise `AlreadyExists` with the current
+        revision otherwise.
+        """
         ...
 
     async def delete(self, uri: str, if_match: str) -> str:
@@ -98,14 +99,13 @@ class InMemoryStore:
         digest = hashlib.sha256(repr(sorted((c.uri, (c.meta or {}).get(REVISION_META_KEY)) for c in children)).encode())
         return Stat(_directory(uri), "d-" + digest.hexdigest()[:16])
 
-    async def create(self, uri: str, contents: WriteContents) -> Stat:
-        self._check_writable(uri)
-        if uri in self._entries or self._children(uri):
-            raise AlreadyExists(uri, self._stat(uri).revision)
-        entry = self._write(uri, contents)
-        return Stat(_describe(uri, entry), entry.revision)
-
-    async def update(self, uri: str, contents: WriteContents, if_match: str) -> tuple[str, Stat]:
+    async def write(self, uri: str, contents: WriteContents, if_match: str | None) -> tuple[str | None, Stat]:
+        if if_match is None:
+            self._check_writable(uri)
+            if uri in self._entries or self._children(uri):
+                raise AlreadyExists(uri, self._stat(uri).revision)
+            entry = self._write(uri, contents)
+            return None, Stat(_describe(uri, entry), entry.revision)
         current = self._file(uri)
         if current.revision != if_match:
             raise RevisionMismatch(uri, current.revision)

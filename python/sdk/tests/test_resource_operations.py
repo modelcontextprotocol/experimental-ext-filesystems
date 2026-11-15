@@ -73,17 +73,17 @@ async def test_create_stat_update_delete() -> None:
     async with Client(make_server()) as client:
         ops = ResourceOperationsClient(client.session)
 
-        created = await ops.create(URI, text("v1"))
+        created = await ops.write(URI, text("v1"), if_none_match="*")
         assert created.resource.size == 2
         assert created.resource.annotations is not None and created.resource.annotations.last_modified
         assert [c.effect for c in created.changes] == ["created"]
-        assert created.changes[0].revision == created.revision
+        assert (created.changes[0].previous_revision, created.changes[0].revision) == (None, created.revision)
 
         stat = await ops.stat(URI)
         assert stat.revision == created.revision
         assert stat.resource.mime_type == "text/markdown"
 
-        updated = await ops.update(URI, text("revision two"), if_match=stat.revision)
+        updated = await ops.write(URI, text("revision two"), if_match=stat.revision)
         assert updated.revision != stat.revision
         assert updated.resource.size == len("revision two")
         change = updated.changes[0]
@@ -103,9 +103,9 @@ async def test_create_stat_update_delete() -> None:
 async def test_create_if_absent_conflict_returns_the_current_revision() -> None:
     async with Client(make_server()) as client:
         ops = ResourceOperationsClient(client.session)
-        first = await ops.create(URI, text("mine"))
+        first = await ops.write(URI, text("mine"), if_none_match="*")
         with pytest.raises(AlreadyExists) as caught:
-            await ops.create(URI, text("theirs"))
+            await ops.write(URI, text("theirs"), if_none_match="*")
     assert caught.value.code == PRECONDITION_FAILED
     assert caught.value.data == {"uri": URI, "reason": "alreadyExists", "currentRevision": first.revision}
 
@@ -113,10 +113,10 @@ async def test_create_if_absent_conflict_returns_the_current_revision() -> None:
 async def test_stale_if_match_is_rejected_with_the_current_revision() -> None:
     async with Client(make_server()) as client:
         ops = ResourceOperationsClient(client.session)
-        v1 = (await ops.create(URI, text("one"))).revision
-        v2 = (await ops.update(URI, text("two"), if_match=v1)).revision
+        v1 = (await ops.write(URI, text("one"), if_none_match="*")).revision
+        v2 = (await ops.write(URI, text("two"), if_match=v1)).revision
         with pytest.raises(RevisionMismatch) as caught:
-            await ops.update(URI, text("stale"), if_match=v1)
+            await ops.write(URI, text("stale"), if_match=v1)
         assert (await ops.stat(URI)).revision == v2
     assert caught.value.code == PRECONDITION_FAILED
     assert caught.value.data == {"uri": URI, "reason": "revisionMismatch", "currentRevision": v2}
@@ -125,8 +125,8 @@ async def test_stale_if_match_is_rejected_with_the_current_revision() -> None:
 async def test_delete_with_stale_if_match_keeps_the_resource() -> None:
     async with Client(make_server()) as client:
         ops = ResourceOperationsClient(client.session)
-        v1 = (await ops.create(URI, text("one"))).revision
-        v2 = (await ops.update(URI, text("two"), if_match=v1)).revision
+        v1 = (await ops.write(URI, text("one"), if_none_match="*")).revision
+        v2 = (await ops.write(URI, text("two"), if_match=v1)).revision
         with pytest.raises(RevisionMismatch) as caught:
             await ops.delete(URI, if_match=v1)
         assert caught.value.current_revision == v2
@@ -139,7 +139,7 @@ async def test_delete_with_stale_if_match_keeps_the_resource() -> None:
 async def test_not_found_uses_invalid_params_like_resources_read() -> None:
     async with Client(make_server()) as client:
         ops = ResourceOperationsClient(client.session)
-        for call in (ops.stat(URI), ops.update(URI, text("x"), if_match="1"), ops.delete(URI, if_match="1")):
+        for call in (ops.stat(URI), ops.write(URI, text("x"), if_match="1"), ops.delete(URI, if_match="1")):
             with pytest.raises(ResourceNotFound) as caught:
                 await call
             assert caught.value.code == -32602
@@ -152,8 +152,8 @@ async def test_invalid_uri_and_unsupported_scheme() -> None:
         with pytest.raises(InvalidResourceUri):
             await ops.stat("plan.md")
         for call in (
-            ops.create("file:///etc/hosts", text("x")),
-            ops.update("file:///etc/hosts", text("x"), if_match="1"),
+            ops.write("file:///etc/hosts", text("x"), if_none_match="*"),
+            ops.write("file:///etc/hosts", text("x"), if_match="1"),
             ops.delete("file:///etc/hosts", if_match="1"),
         ):
             with pytest.raises(OperationNotSupported) as caught:
@@ -165,21 +165,23 @@ async def test_absolute_uris_without_an_authority_are_valid() -> None:
     """RFC 3986 allows `scheme:path`; a foreign scheme is unsupported by this store, not malformed."""
     async with Client(make_server()) as client:
         with pytest.raises(OperationNotSupported):
-            await ResourceOperationsClient(client.session).create("urn:example:plan", text("x"))
+            await ResourceOperationsClient(client.session).write("urn:example:plan", text("x"), if_none_match="*")
 
 
 class _UriOnly(RequestParams):
     uri: str
 
 
-class _UriAndContents(RequestParams):
+class _UncheckedWriteParams(RequestParams):
     uri: str
     contents: TextContents
+    if_match: str | None = None
+    if_none_match: str | None = None
 
 
-class _UpdateWithoutIfMatch(Request[_UriAndContents, Literal["resources/update"]]):
-    method: Literal["resources/update"] = "resources/update"
-    params: _UriAndContents
+class _UncheckedWrite(Request[_UncheckedWriteParams, Literal["resources/write"]]):
+    method: Literal["resources/write"] = "resources/write"
+    params: _UncheckedWriteParams
 
 
 class _DeleteWithoutIfMatch(Request[_UriOnly, Literal["resources/delete"]]):
@@ -187,27 +189,38 @@ class _DeleteWithoutIfMatch(Request[_UriOnly, Literal["resources/delete"]]):
     params: _UriOnly
 
 
-async def test_update_and_delete_require_if_match() -> None:
+async def test_write_requires_exactly_one_precondition_and_delete_requires_if_match() -> None:
     async with Client(make_server()) as client:
-        await ResourceOperationsClient(client.session).create(URI, text("one"))
+        ops = ResourceOperationsClient(client.session)
+        revision = (await ops.write(URI, text("one"), if_none_match="*")).revision
         requests = (
-            _UpdateWithoutIfMatch(params=_UriAndContents(uri=URI, contents=text("two"))),
+            _UncheckedWrite(params=_UncheckedWriteParams(uri=URI, contents=text("two"))),
+            _UncheckedWrite(
+                params=_UncheckedWriteParams(uri=URI, contents=text("two"), if_match=revision, if_none_match="*")
+            ),
+            _UncheckedWrite(params=_UncheckedWriteParams(uri=URI, contents=text("two"), if_none_match=revision)),
             _DeleteWithoutIfMatch(params=_UriOnly(uri=URI)),
         )
         for request in requests:
             with pytest.raises(MCPError) as caught:
                 await client.session.send_request(request, DeleteResult)
             assert caught.value.code == INVALID_PARAMS
-        assert (await ResourceOperationsClient(client.session).stat(URI)).resource.size == 3
+        assert (await ops.stat(URI)).revision == revision
+
+        # The client helper refuses the same mistakes before sending.
+        with pytest.raises(ValueError):
+            await ops.write(URI, text("two"))
+        with pytest.raises(ValueError):
+            await ops.write(URI, text("two"), if_match=revision, if_none_match="*")
 
 
 async def test_update_and_delete_notify_resource_subscribers() -> None:
     server = make_server()
     async with Client(server) as watcher, Client(server) as writer:
         ops = ResourceOperationsClient(writer.session)
-        revision = (await ops.create(URI, text("one"))).revision
+        revision = (await ops.write(URI, text("one"), if_none_match="*")).revision
         async with watcher.listen(resource_subscriptions=[URI]) as subscription:
-            revision = (await ops.update(URI, text("two"), if_match=revision)).revision
+            revision = (await ops.write(URI, text("two"), if_match=revision)).revision
             with anyio.fail_after(2):
                 assert await subscription.__anext__() == ResourceUpdated(uri=URI)
             await ops.delete(URI, if_match=revision)
@@ -220,27 +233,27 @@ async def test_lost_update_is_rejected() -> None:
     server = make_server()
     async with Client(server) as first, Client(server) as second:
         a, b = ResourceOperationsClient(first.session), ResourceOperationsClient(second.session)
-        await a.create(URI, text("- fact 0\n"))
+        await a.write(URI, text("- fact 0\n"), if_none_match="*")
 
         seen_by_a = await a.stat(URI)
         seen_by_b = await b.stat(URI)
         assert seen_by_a.revision == seen_by_b.revision
 
-        written = await a.update(URI, text("- fact 0\n- fact A\n"), if_match=seen_by_a.revision)
+        written = await a.write(URI, text("- fact 0\n- fact A\n"), if_match=seen_by_a.revision)
         with pytest.raises(RevisionMismatch) as caught:
-            await b.update(URI, text("- fact 0\n- fact B\n"), if_match=seen_by_b.revision)
+            await b.write(URI, text("- fact 0\n- fact B\n"), if_match=seen_by_b.revision)
         assert caught.value.current_revision == written.revision
 
         # The rejected writer re-reads, merges, and retries against the revision it was told about.
-        retried = await b.update(URI, text("- fact 0\n- fact A\n- fact B\n"), if_match=caught.value.current_revision)
+        retried = await b.write(URI, text("- fact 0\n- fact A\n- fact B\n"), if_match=caught.value.current_revision)
         assert retried.changes[0].previous_revision == written.revision
 
 
 async def test_directory_read_reuses_the_skills_method_shape() -> None:
     async with Client(make_server(directory_read=True)) as client:
         ops = ResourceOperationsClient(client.session)
-        created = await ops.create(URI, text("plan"))
-        await ops.create("mem://notes/archive/old.md", text("old"))
+        created = await ops.write(URI, text("plan"), if_none_match="*")
+        await ops.write("mem://notes/archive/old.md", text("old"), if_none_match="*")
 
         children = {r.uri: r for r in await ops.read_directory("mem://notes")}
         assert set(children) == {URI, "mem://notes/archive"}
@@ -257,7 +270,7 @@ async def test_directory_read_pages_with_a_cursor() -> None:
         ops = ResourceOperationsClient(client.session)
         uris = [f"mem://notes/{name}.md" for name in "abc"]
         for uri in uris:
-            await ops.create(uri, text(uri))
+            await ops.write(uri, text(uri), if_none_match="*")
 
         request = ReadDirectoryRequest(params=ReadDirectoryParams(uri="mem://notes"))
         first = await client.session.send_request(request, ReadDirectoryResult)
