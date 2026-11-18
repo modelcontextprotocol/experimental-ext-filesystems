@@ -15,7 +15,7 @@ from mcp_types import (
     Result,
     TextResourceContents,
 )
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 EXTENSION_ID = "io.modelcontextprotocol/resource-operations"
@@ -28,8 +28,7 @@ DIRECTORY_MIME_TYPE = "inode/directory"
 """Marks a directory resource, as in SEP-2640."""
 
 METHOD_STAT = "resources/stat"
-METHOD_CREATE = "resources/create"
-METHOD_UPDATE = "resources/update"
+METHOD_WRITE = "resources/write"
 METHOD_DELETE = "resources/delete"
 METHOD_READ_DIRECTORY = "resources/directory/read"
 """Defined by SEP-2640 (Skills). Served here unchanged; see the proposal's Listing section."""
@@ -79,24 +78,22 @@ class StatResult(CacheableResult):
     revision: str
 
 
-class CreateParams(RequestParams):
+class WriteParams(RequestParams):
+    """Exactly one precondition, as with HTTP PUT: `ifMatch` updates that revision, `ifNoneMatch: "*"` creates."""
+
     uri: str
     contents: WriteContents
+    if_match: str | None = None
+    if_none_match: Literal["*"] | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_precondition(self) -> WriteParams:
+        if (self.if_match is None) == (self.if_none_match is None):
+            raise ValueError('exactly one of ifMatch or ifNoneMatch: "*" is required')
+        return self
 
 
-class CreateResult(Result):
-    resource: Resource
-    revision: str
-    changes: list[ResourceChange]
-
-
-class UpdateParams(RequestParams):
-    uri: str
-    contents: WriteContents
-    if_match: str
-
-
-class UpdateResult(Result):
+class WriteResult(Result):
     resource: Resource
     revision: str
     changes: list[ResourceChange]
@@ -124,14 +121,9 @@ class StatRequest(Request[StatParams, Literal["resources/stat"]]):
     params: StatParams
 
 
-class CreateRequest(Request[CreateParams, Literal["resources/create"]]):
-    method: Literal["resources/create"] = "resources/create"
-    params: CreateParams
-
-
-class UpdateRequest(Request[UpdateParams, Literal["resources/update"]]):
-    method: Literal["resources/update"] = "resources/update"
-    params: UpdateParams
+class WriteRequest(Request[WriteParams, Literal["resources/write"]]):
+    method: Literal["resources/write"] = "resources/write"
+    params: WriteParams
 
 
 class DeleteRequest(Request[DeleteParams, Literal["resources/delete"]]):

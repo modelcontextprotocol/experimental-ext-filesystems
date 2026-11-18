@@ -14,7 +14,7 @@ from mcp.shared.exceptions import MCPError
 from mcp_types import INVALID_PARAMS
 
 PRECONDITION_FAILED = -32010
-"""Provisional: `ifMatch` did not match, or `resources/create` found the URI taken. `data.currentRevision` is set."""
+"""Provisional: `ifMatch` did not match, or `ifNoneMatch: "*"` found the URI taken. `data.currentRevision` is set."""
 
 NOT_SUPPORTED = -32011
 """Provisional: the server does not support this operation on this URI."""

@@ -15,7 +15,7 @@ This repository holds the working documents and reference implementations for **
 | [Problem Statements](docs/problem-statements.md) | What is missing from Resources today, as six problem statements with a running example |
 | [Use Cases](docs/use-cases.md) | Concrete situations Resource operations should serve |
 | [Open Questions](docs/open-questions.md) | Questions the group needs to settle, starting with the charter's |
-| [Resource operations strawman](docs/proposals/resource-operations.md) | Draft `stat`, `create`, `update`, `delete` with revision-based concurrency, for discussion |
+| [Resource operations strawman](docs/proposals/resource-operations.md) | Draft `stat`, `write`, `delete` with revision-based concurrency, for discussion |
 | [Decision Log](docs/decisions.md) | ADR-lite record of the group's decisions, and the vehicle for proposing changes |
 | [Related Work](docs/related-work.md) | SEPs, extensions, and discussions this work builds on |
 | [Implementations](docs/implementations.md) | Servers, SDKs, and hosts that implement Resource operations |

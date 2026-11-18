@@ -2,16 +2,16 @@
 
 **Status:** Draft strawman for discussion. Not accepted by the Filesystems Working Group, not part of any specification.
 
-**Decision log entry:** [2026-10-09](../decisions.md#2026-10-09-strawman-for-resource-operations-stat-create-update-delete-with-revision-based-concurrency)  
+**Decision log entries:** [2026-10-09](../decisions.md#2026-10-09-strawman-for-resource-operations-stat-create-update-delete-with-revision-based-concurrency), [2026-11-15](../decisions.md#2026-11-15-merge-create-and-update-into-one-write-method-with-ifmatch-or-ifnonematch)  
 **Prototype:** [`python/sdk/`](../../python/sdk/) · **Conformance scenarios:** [`conformance/`](../../conformance/)
 
 ## Motivation
 
 Resources can be listed and read, but not created, updated, deleted, or inspected without reading the content ([Problem Statement 4](../problem-statements.md#problem-statement-4-writes-metadata-and-typed-errors)). Servers that need writes expose them as tools with ad hoc names, arguments, and errors, and nothing stops two writers from overwriting each other ([Problem Statement 5](../problem-statements.md#problem-statement-5-optimistic-concurrency-control); [use cases](../use-cases.md): shared state written by several agents, memory servers).
 
-This strawman covers the smallest slice of the charter's scope that fixes the write path: a metadata read (`resources/stat`), `resources/create` with create-if-absent semantics, `resources/update` and `resources/delete` conditional on a revision, typed errors, and how these interact with existing cache and notification fields. Listing reuses `resources/directory/read` from SEP-2640. Search, glob, bulk reads, and ranges are deferred.
+This strawman covers the smallest slice of the charter's scope that fixes the write path: a metadata read (`resources/stat`), `resources/write` conditional on a revision or on the resource being absent, `resources/delete` conditional on a revision, typed errors, and how these interact with existing cache and notification fields. Listing reuses `resources/directory/read` from SEP-2640. Search, glob, bulk reads, and ranges are deferred.
 
-Vocabulary follows Kryspin Ziemski's working document shared in #filesystem-wg ("MCP Resources as Addressable Domain State"), which proposes Create, Read, Update, Delete, Query, and Range (CRUDQR) over Resources and a change-set entry `{uri, effect, previousVersion?, version?}`. This draft covers C, U, D, plus `stat`, and uses the change-set entry in write results. It calls the concurrency token a `revision`, the term [Problem Statement 5](../problem-statements.md#problem-statement-5-optimistic-concurrency-control) uses, so the entry here is `{uri, effect, previousRevision?, revision?}`. Query and Range are deferred.
+Vocabulary follows Kryspin Ziemski's working document shared in #filesystem-wg ("MCP Resources as Addressable Domain State"), which proposes Create, Read, Update, Delete, Query, and Range (CRUDQR) over Resources and a change-set entry `{uri, effect, previousVersion?, version?}`. This draft covers C and U (as one write method), D, plus `stat`, and uses the change-set entry in write results. It calls the concurrency token a `revision`, the term [Problem Statement 5](../problem-statements.md#problem-statement-5-optimistic-concurrency-control) uses, so the entry here is `{uri, effect, previousRevision?, revision?}`. Query and Range are deferred.
 
 ## Extension identifier and capability negotiation
 
@@ -34,7 +34,7 @@ A server that supports the extension declares it under `capabilities.extensions`
 | :--- | :--- | :--- | :--- |
 | `directoryRead` | boolean | `false` | The server serves `resources/directory/read` as defined by SEP-2640. |
 
-Declaring the extension commits the server to serving all four methods below. A server that cannot perform an operation on a given URI returns `notSupported` for that URI. Clients MUST NOT call these methods on a server that did not declare the extension. No new methods are added to core, and no existing method changes type: per the core-maintainer meeting on 2026-10-07, extensions may add methods but must not change the types of existing ones.
+Declaring the extension commits the server to serving all three methods below. A server that cannot perform an operation on a given URI returns `notSupported` for that URI. Clients MUST NOT call these methods on a server that did not declare the extension. No new methods are added to core, and no existing method changes type: per the core-maintainer meeting on 2026-10-07, extensions may add methods but must not change the types of existing ones.
 
 ## Revisions
 
@@ -43,12 +43,12 @@ A `revision` is the opaque revision identifier that [Problem Statement 5](../pro
 - Clients compare revisions only for exact string equality. Revisions have no order.
 - A revision MUST change whenever the content or `mimeType` of the resource changes. A revision MUST NOT be reused for a different state of the same URI, including after a delete and re-create. A digest over the content and `mimeType` is a valid revision.
 - Revisions are scoped to one server and one URI.
-- Returned by `resources/stat`, `resources/create`, and `resources/update`. Core shapes that this extension may not retype carry it in `_meta` under `io.modelcontextprotocol/resource-revision`: file entries in a `resources/directory/read` result (`Resource._meta`; directory entries carry none in this draft, see PS6.3 under Open questions), and, when the server can provide it, each item of a `resources/read` result (`contents[]._meta`). The `_meta` key name is provisional.
+- Returned by `resources/stat` and `resources/write`. Core shapes that this extension may not retype carry it in `_meta` under `io.modelcontextprotocol/resource-revision`: file entries in a `resources/directory/read` result (`Resource._meta`; directory entries carry none in this draft, see PS6.3 under Open questions), and, when the server can provide it, each item of a `resources/read` result (`contents[]._meta`). The `_meta` key name is provisional.
 - A directory resource's revision SHOULD change when its set of direct children changes.
 
 ## Methods
 
-Content in `create` and `update` uses the core `TextResourceContents` or `BlobResourceContents` shape, the same one `resources/read` returns, without `uri`: the method's `uri` names the target. Content travels inline; moving large content is the File Uploads Working Group's job.
+Content in `resources/write` uses the core `TextResourceContents` or `BlobResourceContents` shape, the same one `resources/read` returns, without `uri`: the method's `uri` names the target. Content travels inline; moving large content is the File Uploads Working Group's job.
 
 ### `resources/stat`
 
@@ -71,16 +71,24 @@ Returns metadata and the current revision without the content. The result is a c
 
 A directory resource stats with `mimeType: "inode/directory"`, as in SEP-2640.
 
-### `resources/create`
+### `resources/write`
 
-Creates the resource at `uri` only if nothing exists there (create-if-absent). If the URI is taken, the server returns `alreadyExists` with the current revision and changes nothing. There is no upsert: a client that wants to overwrite reads the revision from the error and calls `resources/update`.
+Creates or replaces the content of the resource at `uri`. Every write is conditional: the request carries exactly one precondition, as with HTTP `PUT` and the conditional requests of [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110#section-13.1).
+
+- `ifMatch: "<revision>"` replaces an existing resource, only if its current revision equals `ifMatch` (`If-Match`). If the revision differs, the server returns `revisionMismatch` with the current revision. If nothing exists at `uri`, it returns `notFound`.
+- `ifNoneMatch: "*"` creates the resource, only if nothing exists at `uri` (`If-None-Match: *`). If the URI is taken, the server returns `alreadyExists` with the current revision and changes nothing.
+
+A request with neither or both, or with an `ifNoneMatch` other than `"*"`, is invalid params. There is no unconditional write, so a lost update cannot happen by omission; a client that wants to overwrite reads the revision from `alreadyExists` and retries with `ifMatch`. The result reports the new revision, and the previous one for a replace. A create has no previous revision, so its change entry omits `previousRevision`.
+
+Create:
 
 ```json
 {
-  "method": "resources/create",
+  "method": "resources/write",
   "params": {
     "uri": "mem://notes/plan.md",
-    "contents": { "mimeType": "text/markdown", "text": "# Plan\n" }
+    "contents": { "mimeType": "text/markdown", "text": "# Plan\n" },
+    "ifNoneMatch": "*"
   }
 }
 ```
@@ -95,15 +103,11 @@ Creates the resource at `uri` only if nothing exists there (create-if-absent). I
 }
 ```
 
-The client chooses the URI. SEP-2571 instead had the server assign the URI; that variant is an open question below.
-
-### `resources/update`
-
-Replaces the content of an existing resource, only if its current revision equals `ifMatch`. `ifMatch` is required, so every update is conditional and a lost update cannot happen by omission. The result reports the previous and new revisions.
+Replace:
 
 ```json
 {
-  "method": "resources/update",
+  "method": "resources/write",
   "params": {
     "uri": "mem://notes/plan.md",
     "contents": { "mimeType": "text/markdown", "text": "# Plan\n- ship\n" },
@@ -122,11 +126,13 @@ Replaces the content of an existing resource, only if its current revision equal
 }
 ```
 
-Update is full replacement. Partial updates (patch, append, range writes) are deferred.
+The client chooses the URI. SEP-2571 instead had the server assign the URI; that variant is an open question below.
+
+A write is full replacement. Partial updates (patch, append, range writes) are deferred.
 
 ### `resources/delete`
 
-Deletes the resource, only if its current revision equals `ifMatch`. `ifMatch` is required, as on update. Deleting a directory resource is out of scope for this draft (`notSupported`).
+Deletes the resource, only if its current revision equals `ifMatch`. `ifMatch` is required, as on a replacing write; delete has no `ifNoneMatch`. Deleting a directory resource is out of scope for this draft (`notSupported`).
 
 ```json
 { "method": "resources/delete", "params": { "uri": "mem://notes/plan.md", "ifMatch": "18" } }
@@ -141,9 +147,9 @@ Each write result carries `changes`, a list of change-set entries in the vocabul
 
 ### Concurrency
 
-The server MUST compare the revision and apply the write as one atomic step. A check followed by a separate write reintroduces the lost update this mechanism exists to prevent.
+The server MUST check the precondition (revision equal, or resource absent) and apply the write as one atomic step. A check followed by a separate write reintroduces the lost update this mechanism exists to prevent.
 
-The lost-update case from [use cases](../use-cases.md) plays out as follows. Two sessions stat `plan.md` at revision `17`. Session A updates with `ifMatch: "17"` and gets revision `18`. Session B updates with `ifMatch: "17"` and gets `revisionMismatch` with `currentRevision: "18"`. B re-reads, merges, and retries with `ifMatch: "18"`.
+The lost-update case from [use cases](../use-cases.md) plays out as follows. Two sessions stat `plan.md` at revision `17`. Session A writes with `ifMatch: "17"` and gets revision `18`. Session B writes with `ifMatch: "17"` and gets `revisionMismatch` with `currentRevision: "18"`. B re-reads, merges, and retries with `ifMatch: "18"`.
 
 ### Listing: reuse `resources/directory/read`
 
@@ -167,7 +173,8 @@ The cleaner long-term shape is probably for one definition to live in one place 
 | Resource does not exist | `-32602` Invalid params | `notFound` | `uri` |
 | URI malformed, or not a directory (`resources/directory/read`) | `-32602` Invalid params | `invalidUri` | `uri` |
 | `ifMatch` does not match | `-32010` (provisional) | `revisionMismatch` | `uri`, `currentRevision` |
-| `resources/create` on an existing URI | `-32010` (provisional) | `alreadyExists` | `uri`, `currentRevision` |
+| `ifNoneMatch: "*"` on an existing URI | `-32010` (provisional) | `alreadyExists` | `uri`, `currentRevision` |
+| `resources/write` with neither or both of `ifMatch` and `ifNoneMatch`, or `ifNoneMatch` other than `"*"` | `-32602` Invalid params | | |
 | Operation not supported for this URI (read-only scheme, directory, ancestor is a file) | `-32011` (provisional) | `notSupported` | `uri` |
 | Extension not declared, or wrong protocol version | `-32601` Method not found | | |
 
@@ -177,7 +184,7 @@ The two new codes are placeholders in the implementation-defined band. The 2026-
 
 ## Interactions
 
-**`notifications/resources/updated`.** After a successful update or delete, the server SHOULD send `notifications/resources/updated` for the URI to clients subscribed to it (through `subscriptions/listen` with `resourceSubscriptions` on 2026-07-28, or `resources/subscribe` on earlier versions). After a create or delete, it SHOULD send `notifications/resources/list_changed` if it declared `listChanged`. The writer may receive its own notification; it can compare its result's `revision` with a fresh `stat`. Open: whether the notification should carry the change-set entry in `_meta` so subscribers can skip the `stat`.
+**`notifications/resources/updated`.** After a successful write with `ifMatch` or a delete, the server SHOULD send `notifications/resources/updated` for the URI to clients subscribed to it (through `subscriptions/listen` with `resourceSubscriptions` on 2026-07-28, or `resources/subscribe` on earlier versions). After a write with `ifNoneMatch: "*"` or a delete, it SHOULD send `notifications/resources/list_changed` if it declared `listChanged`. The writer may receive its own notification; it can compare its result's `revision` with a fresh `stat`. Open: whether the notification should carry the change-set entry in `_meta` so subscribers can skip the `stat`.
 
 **`lastModified`.** Servers that track modification time MUST set `annotations.lastModified` on the `Resource` returned by `stat` and by writes, and update it on every write. It is informational only and MUST NOT be used as a precondition: timestamps have coarse resolution and clocks skew, so two writes can share one.
 
@@ -200,14 +207,14 @@ The Python prototype is built only on the MCP Python SDK's public `Extension` an
 PS*n*.*m* is item *m* under "A proposal must" in Problem Statement *n* of [problem-statements.md](../problem-statements.md); "open question *n*" refers to [open-questions.md](../open-questions.md); "new" marks questions this draft raises.
 
 - **Open question 2, PS4.6** Where an upload flow ends and a resource write begins: not addressed (see below). This draft assumes `resources/*` and would be renamed if the group chooses a `files/*` family.
-- **PS5.2, PS5.4** Concurrency: this draft proposes an opaque `revision`, required `ifMatch` on update and delete, and create-if-absent as the only create, so a server that supports writes always enforces preconditions. Alternatives: optional `ifMatch` on update or delete (unconditional overwrite or delete allowed); HTTP-style `ifNoneMatch: "*"` on a single write method instead of separate create and update.
+- **PS5.2, PS5.4** Concurrency: this draft proposes an opaque `revision`, one `resources/write` that requires exactly one of `ifMatch` or `ifNoneMatch: "*"`, and required `ifMatch` on delete, so a server that supports writes always enforces preconditions. Alternatives: optional preconditions (unconditional overwrite or delete allowed); separate `resources/create` and `resources/update` methods, as in the first draft (see the 2026-11-15 decision log entry).
 - **PS5.5** Reads pinned to a revision: not addressed. A client can tell that a resource changed by comparing the revision in `contents[]._meta`, but cannot ask for an older state; most backends keep no history, so the lean is an optional server capability, settled together with partial reads (PS3.4).
 - **PS6.1, PS6.2, PS6.5, PS5.1** Interactions: proposed above. Open: change-set entry in notification `_meta`; `cacheScope: "public"` for `stat`; whether `resources/read` SHOULD or MUST carry the revision in `_meta`, and the key name.
 - **PS6.3** Subscribing to a directory: not addressed. Subscriptions stay per URI, and a client watching a directory relies on `list_changed` or re-reads it. Directory entries in a listing carry no revision for now, because a directory revision is most useful alongside a directory subscription; both are settled together.
 - **PS6.4** `ttlMs` and `cacheScope` on write results: this draft returns the new revision and leaves both out. A write result describes the state right after this write, and another writer can change it at any moment, so the cacheable thing is a fresh `stat` or read, which carry both fields. The new revision is what lets a client seed its cache safely: if it is stale, the next conditional write fails with `revisionMismatch`.
 - **PS4.4** Marking a URI or subtree read-only, writable, or append-only: today a server answers `notSupported` per URI. Open: whether a server declares this up front (on `stat` results, listing entries, or a server-wide read-only setting that serves `stat` without writes). Append-only needs an append operation, deferred with partial updates.
 - **PS4.5** Typed errors: proposed above. Open: permission denied and quota exceeded, not defined yet (the lean is two more `data.reason` values); where extension error codes are allocated; whether `notFound` deserves its own code despite core's `-32602`.
-- **Open question 1** SEP-2571, SEP-2532, and one SEP or several: this draft folds in SEP-2571's create and delete and suggests one SEP for `stat` and writes, with listing settled jointly with Skills, and Query and Range (which overlaps SEP-2532) in a later SEP.
+- **Open question 1** SEP-2571, SEP-2532, and one SEP or several: this draft folds in SEP-2571's create (as `resources/write` with `ifNoneMatch: "*"`) and delete and suggests one SEP for `stat` and writes, with listing settled jointly with Skills, and Query and Range (which overlaps SEP-2532) in a later SEP.
 - **Open question 3, PS1.2** Skills directory read: reuse as-is with a second `directoryRead` flag. Open: whether the definition moves here or to core.
 - **PS4.2** Server-assigned URIs (SEP-2571 style, create in a collection) alongside client-chosen URIs.
 - **New** The extension identifier and `_meta` key names, and whether experimental builds should use a different prefix.
@@ -215,7 +222,7 @@ PS*n*.*m* is item *m* under "A proposal must" in Problem Statement *n* of [probl
 
 ## Not addressed
 
-- **Content transfer.** Content travels inline. Out-of-band transfer, digests, size limits, and streaming belong to the File Uploads Working Group; `create` and `update` will need a way to reference transferred content once that exists.
+- **Content transfer.** Content travels inline. Out-of-band transfer, digests, size limits, and streaming belong to the File Uploads Working Group; `resources/write` will need a way to reference transferred content once that exists.
 - **File inputs.** Marking tool or elicitation inputs as files belongs to the File Uploads Working Group. Nothing here depends on it.
 - **Whether files are Resource URIs.** The charter's cross-cutting decision ([open question 2](../open-questions.md), PS4.6). This draft operates on Resource URIs because that is what exists today; it takes no position on the decision.
 - **Authorization.** Who may write what is out of the charter's scope beyond stating that the existing MCP authorization specification applies.

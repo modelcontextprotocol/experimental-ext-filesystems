@@ -13,9 +13,9 @@ Conventions:
 
 | # | Connection | Request | Expect |
 | :--- | :--- | :--- | :--- |
-| 1 | A | `resources/create {uri: <U>, contents: {text: "a"}}` | Result. `revision` is a non-empty string; save as `<R1>`. `changes` contains `{uri: <U>, effect: "created", revision: <R1>}`. |
-| 2 | B | `resources/create {uri: <U>, contents: {text: "b"}}` | Error. Code is precondition failed. `data.uri` = `<U>`, `data.reason` = `"alreadyExists"`, `data.currentRevision` = `<R1>`. |
-| 3 | A | `resources/stat {uri: <U>}` | Result. `revision` = `<R1>`. The second create changed nothing. |
+| 1 | A | `resources/write {uri: <U>, contents: {text: "a"}, ifNoneMatch: "*"}` | Result. `revision` is a non-empty string; save as `<R1>`. `changes` contains `{uri: <U>, effect: "created", revision: <R1>}`. |
+| 2 | B | `resources/write {uri: <U>, contents: {text: "b"}, ifNoneMatch: "*"}` | Error. Code is precondition failed. `data.uri` = `<U>`, `data.reason` = `"alreadyExists"`, `data.currentRevision` = `<R1>`. |
+| 3 | A | `resources/stat {uri: <U>}` | Result. `revision` = `<R1>`. The second write changed nothing. |
 
 ## RO-CONFLICT-2: lost update
 
@@ -23,14 +23,23 @@ The memory-server case from [use cases](../docs/use-cases.md): two sessions read
 
 | # | Connection | Request | Expect |
 | :--- | :--- | :--- | :--- |
-| 1 | A | `resources/create {uri: <U>, contents: {text: "0"}}` | Result. |
+| 1 | A | `resources/write {uri: <U>, contents: {text: "0"}, ifNoneMatch: "*"}` | Result. |
 | 2 | A | `resources/stat {uri: <U>}` | Result. Save `revision` as `<R1>`. |
 | 3 | B | `resources/stat {uri: <U>}` | Result. `revision` = `<R1>`. |
-| 4 | A | `resources/update {uri: <U>, contents: {text: "0A"}, ifMatch: <R1>}` | Result. Save `revision` as `<R2>`; `<R2>` != `<R1>`. `changes` contains `{uri: <U>, effect: "updated", previousRevision: <R1>, revision: <R2>}`. |
-| 5 | B | `resources/update {uri: <U>, contents: {text: "0B"}, ifMatch: <R1>}` | Error. Code is precondition failed. `data.reason` = `"revisionMismatch"`, `data.currentRevision` = `<R2>`. |
+| 4 | A | `resources/write {uri: <U>, contents: {text: "0A"}, ifMatch: <R1>}` | Result. Save `revision` as `<R2>`; `<R2>` != `<R1>`. `changes` contains `{uri: <U>, effect: "updated", previousRevision: <R1>, revision: <R2>}`. |
+| 5 | B | `resources/write {uri: <U>, contents: {text: "0B"}, ifMatch: <R1>}` | Error. Code is precondition failed. `data.reason` = `"revisionMismatch"`, `data.currentRevision` = `<R2>`. |
 | 6 | B | `resources/stat {uri: <U>}` | Result. `revision` = `<R2>`. The rejected write changed nothing. |
-| 7 | B | `resources/update {uri: <U>, contents: {text: "0AB"}, ifMatch: <R2>}` | Result. `changes` contains `previousRevision: <R2>`. |
+| 7 | B | `resources/write {uri: <U>, contents: {text: "0AB"}, ifMatch: <R2>}` | Result. `changes` contains `previousRevision: <R2>`. |
 | 8 | B | `resources/delete {uri: <U>, ifMatch: <R1>}` | Error. Code is precondition failed. `data.reason` = `"revisionMismatch"`. |
 | 9 | A | `resources/stat {uri: <U>}` | Result. The resource still exists. |
 
 Optional, if the server reads back what it stores: after step 7, `resources/read {uri: <U>}` returns text `"0AB"`.
+
+## RO-CONFLICT-3: exactly one precondition
+
+| # | Connection | Request | Expect |
+| :--- | :--- | :--- | :--- |
+| 1 | A | `resources/write {uri: <U>, contents: {text: "a"}, ifNoneMatch: "*"}` | Result. Save `revision` as `<R1>`. |
+| 2 | A | `resources/write {uri: <U>, contents: {text: "b"}}` | Error. Code is `-32602` (Invalid params). |
+| 3 | A | `resources/write {uri: <U>, contents: {text: "b"}, ifMatch: <R1>, ifNoneMatch: "*"}` | Error. Code is `-32602` (Invalid params). |
+| 4 | A | `resources/stat {uri: <U>}` | Result. `revision` = `<R1>`. Neither rejected write changed anything. |

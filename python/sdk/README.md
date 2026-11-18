@@ -4,7 +4,7 @@ Python reference implementation of the experimental MCP Resource operations exte
 
 **Status:** Prototype of the [Resource operations strawman](../../docs/proposals/resource-operations.md). Expect every name and code to change.
 
-It serves `resources/stat`, `resources/create`, `resources/update`, `resources/delete`, and optionally SEP-2640's `resources/directory/read`, on the 2026-07-28 protocol version, through `Extension`/`MethodBinding` only.
+It serves `resources/stat`, `resources/write`, `resources/delete`, and optionally SEP-2640's `resources/directory/read`, on the 2026-07-28 protocol version, through `Extension`/`MethodBinding` only.
 
 ## Usage
 
@@ -34,9 +34,9 @@ from mcp_ext_filesystems import ResourceOperationsClient, RevisionMismatch, Text
 uri = "mem://notes/plan.md"
 async with Client(server) as client:
     ops = ResourceOperationsClient(client.session)
-    created = await ops.create(uri, TextContents(text="# Plan\n"))
+    created = await ops.write(uri, TextContents(text="# Plan\n"), if_none_match="*")
     try:
-        await ops.update(uri, TextContents(text="# Plan\n- ship\n"), if_match=created.revision)
+        await ops.write(uri, TextContents(text="# Plan\n- ship\n"), if_match=created.revision)
     except RevisionMismatch as conflict:
         ...  # someone else wrote first: re-read, merge, retry with conflict.current_revision
 ```

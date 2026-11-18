@@ -24,13 +24,10 @@ from mcp_ext_filesystems.errors import InvalidResourceUri
 from mcp_ext_filesystems.store import ResourceStore
 from mcp_ext_filesystems.wire import (
     EXTENSION_ID,
-    METHOD_CREATE,
     METHOD_DELETE,
     METHOD_READ_DIRECTORY,
     METHOD_STAT,
-    METHOD_UPDATE,
-    CreateParams,
-    CreateResult,
+    METHOD_WRITE,
     DeleteParams,
     DeleteResult,
     ReadDirectoryParams,
@@ -38,8 +35,8 @@ from mcp_ext_filesystems.wire import (
     ResourceChange,
     StatParams,
     StatResult,
-    UpdateParams,
-    UpdateResult,
+    WriteParams,
+    WriteResult,
 )
 
 # `capabilities.extensions` only exists on the 2026-07-28 wire, so the methods are served there only.
@@ -47,7 +44,7 @@ _VERSIONS = frozenset(MODERN_PROTOCOL_VERSIONS)
 
 
 class ResourceOperations(Extension):
-    """Serve `resources/stat`, `create`, `update`, `delete`, and optionally `resources/directory/read`.
+    """Serve `resources/stat`, `write`, `delete`, and optionally `resources/directory/read`.
 
     `directory_read=True` binds SEP-2640's `resources/directory/read` and advertises `directoryRead`. Leave it
     off on a server that also runs the Skills extension with directory reads: the SDK lets one extension bind a
@@ -73,8 +70,7 @@ class ResourceOperations(Extension):
     def methods(self) -> Sequence[MethodBinding]:
         bindings = [
             MethodBinding(METHOD_STAT, StatParams, self._stat, _VERSIONS),
-            MethodBinding(METHOD_CREATE, CreateParams, self._create, _VERSIONS),
-            MethodBinding(METHOD_UPDATE, UpdateParams, self._update, _VERSIONS),
+            MethodBinding(METHOD_WRITE, WriteParams, self._write, _VERSIONS),
             MethodBinding(METHOD_DELETE, DeleteParams, self._delete, _VERSIONS),
         ]
         if self._directory_read:
@@ -86,19 +82,18 @@ class ResourceOperations(Extension):
         stat = await self._store.stat(params.uri)
         return StatResult(resource=stat.resource, revision=stat.revision)
 
-    async def _create(self, ctx: ServerRequestContext[Any, Any], params: CreateParams) -> HandlerResult:
+    async def _write(self, ctx: ServerRequestContext[Any, Any], params: WriteParams) -> HandlerResult:
         _check_uri(params.uri)
-        stat = await self._store.create(params.uri, params.contents)
-        await self._publish(ResourcesListChanged())
-        change = ResourceChange(uri=params.uri, effect="created", revision=stat.revision)
-        return CreateResult(resource=stat.resource, revision=stat.revision, changes=[change])
-
-    async def _update(self, ctx: ServerRequestContext[Any, Any], params: UpdateParams) -> HandlerResult:
-        _check_uri(params.uri)
-        previous, stat = await self._store.update(params.uri, params.contents, params.if_match)
-        await self._publish(ResourceUpdated(uri=params.uri))
-        change = ResourceChange(uri=params.uri, effect="updated", previous_revision=previous, revision=stat.revision)
-        return UpdateResult(resource=stat.resource, revision=stat.revision, changes=[change])
+        previous, stat = await self._store.write(params.uri, params.contents, params.if_match)
+        if previous is None:
+            await self._publish(ResourcesListChanged())
+            change = ResourceChange(uri=params.uri, effect="created", revision=stat.revision)
+        else:
+            await self._publish(ResourceUpdated(uri=params.uri))
+            change = ResourceChange(
+                uri=params.uri, effect="updated", previous_revision=previous, revision=stat.revision
+            )
+        return WriteResult(resource=stat.resource, revision=stat.revision, changes=[change])
 
     async def _delete(self, ctx: ServerRequestContext[Any, Any], params: DeleteParams) -> HandlerResult:
         _check_uri(params.uri)

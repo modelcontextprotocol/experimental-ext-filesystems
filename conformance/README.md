@@ -4,6 +4,6 @@ Conformance scenarios for each new Resource operation method and schema element,
 
 | Scenarios | Covers |
 | :--- | :--- |
-| [resource-operations-conflicts.md](resource-operations-conflicts.md) | Create-if-absent and stale `ifMatch` from the [Resource operations strawman](../docs/proposals/resource-operations.md) |
+| [resource-operations-conflicts.md](resource-operations-conflicts.md) | `ifNoneMatch: "*"` (create-if-absent), stale `ifMatch`, and missing preconditions from the [Resource operations strawman](../docs/proposals/resource-operations.md) |
 
 Scenarios are written as request and expectation tables for now. A runnable harness can come once the methods settle.
